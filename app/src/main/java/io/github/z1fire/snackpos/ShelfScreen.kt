@@ -4,7 +4,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
@@ -12,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,12 +35,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.PageSize
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -50,10 +46,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -63,7 +57,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -74,22 +68,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.launch
-import kotlin.math.abs
-import kotlin.math.min
 
 private val Ease = CubicBezierEasing(.2f, .8f, .2f, 1f)
-
-/** Card tilt in degrees for cards beside the centre one. */
-const val Tilt = 16f
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun App(vm: ShelfViewModel) {
-    BackHandler(vm.pinOpen || vm.selected != null || vm.admin) {
+    BackHandler(vm.pinOpen || vm.basket.isNotEmpty() || vm.admin) {
         when {
             vm.pinOpen -> vm.closePin()
-            vm.selected != null -> vm.cancel()
+            vm.basket.isNotEmpty() -> vm.cancel()
             else -> vm.lock()
         }
     }
@@ -108,8 +96,10 @@ fun App(vm: ShelfViewModel) {
             ) {
                 Header(vm)
                 if (vm.admin) AdminScreen(vm) else Shelf(vm)
+                if (!vm.admin && vm.basket.isNotEmpty()) Spacer(Modifier.height(150.dp))
             }
         }
+        if (!vm.admin) BasketBar(vm, Modifier.align(Alignment.BottomCenter))
         if (vm.pinOpen) PinPad(vm)
     }
 }
@@ -130,7 +120,7 @@ private fun Header(vm: ShelfViewModel) {
                 fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 36.sp, letterSpacing = (-0.72).sp, color = C.Ink,
             )
             Text(
-                if (vm.admin) "Stock, prices and what is being taken." else "Swipe to browse, tap to pick.",
+                if (vm.admin) "Stock, prices and what is being taken." else "Tap snacks to add them, then take them all at once.",
                 Modifier.padding(top = 4.dp), fontFamily = Inter, fontSize = 17.sp, color = C.Slate600,
             )
         }
@@ -169,190 +159,174 @@ private fun Header(vm: ShelfViewModel) {
     }
 }
 
-/** Pages either side of the start so the carousel loops in both directions. */
-private const val Loop = 100_000
-
 @Composable
 private fun Shelf(vm: ShelfViewModel) {
     val items = vm.data.items
-    val n = items.size
     val low = vm.data.lowAt
-    val selItem = items.firstOrNull { it.id == vm.selected && it.stock > 0 }
-    val pager = rememberPagerState(initialPage = if (n > 0) (Loop / 2) - (Loop / 2) % n else 0) { if (n > 0) Loop else 0 }
-    val scope = rememberCoroutineScope()
     val shape = RoundedCornerShape(32.dp)
 
-    BoxWithConstraints(
+    Column(
         Modifier.fillMaxWidth()
             .shadow(30.dp, shape, spotColor = C.Ink.copy(alpha = .25f))
             .clip(shape)
             .background(C.Ink)
+            .padding(20.dp)
             .semantics { contentDescription = "Snacks" },
     ) {
-        val cardW = min(maxWidth.value * 0.68f, 290f).dp
-        val side = (maxWidth - cardW) / 2
-        // Backdrop disc behind the centre card.
-        Box(
-            Modifier.align(Alignment.TopCenter).offset(y = 40.dp).size(520.dp)
-                .alpha(.9f).background(C.Slate800, CircleShape),
-        )
-        Column(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 28.dp)) {
-            if (n == 0) {
-                Text(
-                    "No snacks yet. Add some in Admin.", Modifier.fillMaxWidth().padding(vertical = 120.dp),
-                    color = C.Slate300, fontFamily = Inter, fontSize = 18.sp, textAlign = TextAlign.Center,
-                )
-            } else {
-                HorizontalPager(
-                    pager,
-                    Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(start = side, end = side, top = 36.dp, bottom = 30.dp),
-                    pageSize = PageSize.Fixed(cardW),
-                    pageSpacing = 4.dp,
-                    beyondViewportPageCount = 2,
-                    userScrollEnabled = selItem == null,
-                ) { page ->
-                    val it = items[page % n]
-                    val d = (page - pager.currentPage) - pager.currentPageOffsetFraction
-                    val a = min(abs(d), 1.6f)
-                    SnackCard(
-                        it, low,
-                        selected = selItem?.id == it.id,
-                        dim = selItem != null && selItem.id != it.id,
-                        modifier = Modifier.graphicsLayer {
-                            val s = 1f - 0.13f * a
-                            scaleX = s; scaleY = s
-                            // Outer edges swing toward the viewer, as CSS rotateY(-d·tilt) does in the design.
-                            rotationY = d.coerceIn(-1f, 1f) * Tilt
-                            translationY = (1f - min(a, 1f)) * -10.dp.toPx()
-                            alpha = 1f - 0.4f * (a / 1.6f)
-                            cameraDistance = 14f * density
-                            transformOrigin = TransformOrigin(.5f, .6f)
-                        },
-                    ) {
-                        if (selItem == null && it.stock > 0) {
-                            vm.pick(it.id)
-                            scope.launch { pager.animateScrollToPage(page) }
-                        }
-                    }
-                }
-
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                ) {
-                    val center = pager.currentPage % n
-                    items.forEachIndexed { i, _ ->
-                        val on = i == center
-                        val w by animateDpAsState(if (on) 28.dp else 8.dp, tween(300, easing = Ease), label = "dot")
-                        Box(Modifier.height(8.dp).width(w).background(if (on) C.Yellow else Color.White.copy(alpha = .3f), RoundedCornerShape(999.dp)))
-                    }
-                }
-            }
-
-            Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).heightIn(min = 72.dp), contentAlignment = Alignment.Center) {
-                androidx.compose.animation.AnimatedVisibility(selItem != null, enter = fadeIn(tween(300)) + slideInVertically(tween(300, easing = Ease)) { it / 7 }, exit = fadeOut(tween(120))) {
-                    val last = remember { arrayOfNulls<Snack>(1) }
-                    if (selItem != null) last[0] = selItem
-                    val sel = last[0] ?: return@AnimatedVisibility
-                    BoxWithConstraints(Modifier.widthIn(max = 580.dp).fillMaxWidth()) {
-                        val stack = maxWidth < 440.dp
-                        val take: @Composable (Modifier) -> Unit = { m ->
-                            Btn(
-                                vm::take, m.shadow(16.dp, RoundedCornerShape(20.dp), spotColor = C.Yellow.copy(alpha = .4f)),
-                                bg = C.Yellow, fg = C.Ink, border = null, radius = 20.dp, minHeight = 72.dp, padding = PaddingValues(horizontal = 24.dp),
-                            ) { BtnText("Take one ${sel.name} · ${money(sel.price)}", size = 21.sp, weight = FontWeight.Bold) }
-                        }
-                        val cancel: @Composable (Modifier) -> Unit = { m ->
-                            Btn(
-                                vm::cancel, m, bg = Color.Transparent, fg = Color.White, border = BorderStroke(1.dp, Color.White.copy(alpha = .35f)),
-                                radius = 20.dp, minHeight = 72.dp, padding = PaddingValues(horizontal = 24.dp),
-                            ) { BtnText("Cancel", size = 18.sp) }
-                        }
-                        if (stack) {
-                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { take(Modifier.fillMaxWidth()); cancel(Modifier.fillMaxWidth()) }
-                        } else {
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { take(Modifier.weight(1f)); cancel(Modifier) }
-                        }
-                    }
-                }
-                if (selItem == null && n > 0) {
-                    Text("Tap a snack to pick it.", color = C.Slate300, fontFamily = Inter, fontSize = 18.sp)
-                }
-            }
-        }
-
-        if (selItem == null && n > 0) {
-            listOf(Icon.Left to -1, Icon.Right to 1).forEach { (icon, dir) ->
-                Box(
-                    Modifier
-                        .align(if (dir < 0) Alignment.TopStart else Alignment.TopEnd)
-                        .padding(start = 16.dp, end = 16.dp, top = 190.dp)
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(C.Ink.copy(alpha = .6f))
-                        .border(1.dp, Color.White.copy(alpha = .25f), CircleShape)
-                        .clickable(role = Role.Button) { scope.launch { pager.animateScrollToPage(pager.currentPage + dir) } }
-                        .semantics { contentDescription = if (dir < 0) "Previous snack" else "Next snack" },
-                    contentAlignment = Alignment.Center,
-                ) { StrokeIcon(icon, Color.White, 24.dp, 2.4f) }
+        if (items.isEmpty()) {
+            Text(
+                "No snacks yet. Add some in Admin.", Modifier.fillMaxWidth().padding(vertical = 120.dp),
+                color = C.Slate300, fontFamily = Inter, fontSize = 18.sp, textAlign = TextAlign.Center,
+            )
+        } else {
+            // Two columns still fit on a phone; tablets get wider cards.
+            val narrow = LocalConfiguration.current.screenWidthDp < 600
+            Grid(items, min = if (narrow) 130.dp else 190.dp, gap = if (narrow) 12.dp else 16.dp) { s, m ->
+                SnackCard(s, low, vm.basket[s.id] ?: 0, m, onAdd = { vm.pick(s.id) }, onRemove = { vm.unpick(s.id) })
             }
         }
     }
 }
 
 @Composable
-private fun SnackCard(s: Snack, low: Int, selected: Boolean, dim: Boolean, modifier: Modifier, onPick: () -> Unit) {
+private fun SnackCard(s: Snack, low: Int, qty: Int, modifier: Modifier, onAdd: () -> Unit, onRemove: () -> Unit) {
     val out = s.stock <= 0
     val isLow = !out && s.stock <= low
-    val shape = RoundedCornerShape(28.dp)
-    val lift by animateDpAsState(if (selected) (-8).dp else 0.dp, tween(350, easing = Ease), label = "lift")
-    val grow by animateFloatAsState(if (selected) 1.05f else 1f, tween(350, easing = Ease), label = "grow")
-    val fade by animateFloatAsState(if (out) .5f else if (dim) .3f else 1f, tween(300), label = "fade")
-    val sat by animateFloatAsState(if (out) 0f else if (dim) .4f else 1f, tween(300), label = "sat")
-    val ring by animateFloatAsState(if (selected) 1f else 0f, tween(350, easing = Ease), label = "ring")
-    val label = if (out) "${s.name}, ${money(s.price)}, all gone" else "Pick ${s.name}, ${money(s.price)}, ${s.stock} left"
+    val full = qty >= s.stock
+    val selected = qty > 0
+    val shape = RoundedCornerShape(24.dp)
+    val grow by animateFloatAsState(if (selected) 1.02f else 1f, tween(250, easing = Ease), label = "grow")
+    val fade by animateFloatAsState(if (out) .5f else 1f, tween(300), label = "fade")
+    val sat by animateFloatAsState(if (out) 0f else 1f, tween(300), label = "sat")
+    val ring by animateFloatAsState(if (selected) 1f else 0f, tween(250, easing = Ease), label = "ring")
+    val label = when {
+        out -> "${s.name}, ${money(s.price)}, all gone"
+        selected -> "Add another ${s.name}, ${money(s.price)}, $qty picked, ${s.stock} left"
+        else -> "Add ${s.name}, ${money(s.price)}, ${s.stock} left"
+    }
 
-    Box(modifier) {
+    Box(modifier.graphicsLayer { scaleX = grow; scaleY = grow; alpha = fade }) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .graphicsLayer { translationY = lift.toPx(); scaleX = grow; scaleY = grow; alpha = fade }
                 .drawBehind {
                     if (ring > 0f) {
-                        val r = 5.dp.toPx() * ring
-                        drawRoundRect(C.Yellow, Offset(-r, -r), Size(size.width + 2 * r, size.height + 2 * r), CornerRadius(28.dp.toPx() + r))
+                        val r = 4.dp.toPx() * ring
+                        drawRoundRect(C.Yellow, Offset(-r, -r), Size(size.width + 2 * r, size.height + 2 * r), CornerRadius(24.dp.toPx() + r))
                     }
                 }
-                .shadow(if (selected) 26.dp else 18.dp, shape, spotColor = Color.Black.copy(alpha = if (selected) .5f else .35f))
+                .shadow(if (selected) 20.dp else 12.dp, shape, spotColor = Color.Black.copy(alpha = .35f))
                 .clip(shape)
                 .background(Color.White)
                 .saturation(sat)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() }, indication = null,
-                    enabled = !out, role = Role.Button, onClickLabel = label, onClick = onPick,
+                    enabled = !out && !full, role = Role.Button, onClickLabel = label, onClick = onAdd,
                 )
                 .semantics { contentDescription = label },
         ) {
-            PhotoOrInitial(s, 110.sp, Modifier.fillMaxWidth().height(230.dp)) {
+            PhotoOrInitial(s, 64.sp, Modifier.fillMaxWidth().height(130.dp)) {
                 Box(Modifier.fillMaxSize()) {
-                    Box(Modifier.align(Alignment.TopEnd).offset(40.dp, (-40).dp).size(160.dp).background(Color.White.copy(alpha = .14f), CircleShape))
-                    Box(Modifier.align(Alignment.BottomStart).offset((-30).dp, 50.dp).size(130.dp).background(Color.Black.copy(alpha = .10f), CircleShape))
+                    Box(Modifier.align(Alignment.TopEnd).offset(30.dp, (-30).dp).size(110.dp).background(Color.White.copy(alpha = .14f), CircleShape))
+                    Box(Modifier.align(Alignment.BottomStart).offset((-24).dp, 36.dp).size(90.dp).background(Color.Black.copy(alpha = .10f), CircleShape))
                 }
             }
-            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(s.name, fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 24.sp, lineHeight = 27.sp, color = C.Ink, maxLines = 2)
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(s.name, fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 19.sp, lineHeight = 22.sp, color = C.Ink, maxLines = 2, minLines = 2)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text(money(s.price), fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 32.sp, letterSpacing = (-0.32).sp, color = C.Ink)
+                    Text(money(s.price), fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 24.sp, color = C.Ink)
                     Pill(
-                        if (out) "All gone" else if (isLow) "Only ${s.stock} left" else "${s.stock} left",
+                        if (out) "All gone" else if (isLow) "Only ${s.stock}" else "${s.stock} left",
                         if (out) Tone.Gray else if (isLow) Tone.Amber else Tone.Green,
                     )
                 }
             }
         }
+        if (selected) {
+            Box(
+                Modifier.align(Alignment.TopEnd).padding(10.dp).size(44.dp)
+                    .shadow(8.dp, CircleShape).background(C.Yellow, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { Text("$qty", fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = C.Ink) }
+            Box(
+                Modifier.align(Alignment.TopStart).padding(10.dp).size(44.dp)
+                    .shadow(8.dp, CircleShape).clip(CircleShape).background(C.Ink.copy(alpha = .85f))
+                    .clickable(role = Role.Button, onClick = onRemove)
+                    .semantics { contentDescription = "Remove one ${s.name}" },
+                contentAlignment = Alignment.Center,
+            ) { Text("−", fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 26.sp, color = Color.White) }
+        }
     }
 }
+
+/** Sticks to the bottom of the screen while anything is picked. */
+@Composable
+private fun BasketBar(vm: ShelfViewModel, modifier: Modifier) {
+    val lines = vm.lines
+    androidx.compose.animation.AnimatedVisibility(
+        lines.isNotEmpty(), modifier,
+        enter = fadeIn(tween(250)) + slideInVertically(tween(300, easing = Ease)) { it / 2 },
+        exit = fadeOut(tween(150)) + slideOutVertically(tween(200)) { it / 2 },
+    ) {
+        val last = remember { mutableListOf<Pair<Snack, Int>>() }
+        if (lines.isNotEmpty()) { last.clear(); last.addAll(lines) }
+        val count = last.sumOf { it.second }
+        val total = last.sumOf { (s, q) -> s.price * q }
+        BoxWithConstraints(
+            Modifier.fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            val stack = maxWidth < 560.dp
+            val summary: @Composable (Modifier) -> Unit = { m ->
+                Column(m) {
+                    Text(
+                        "$count ${if (count == 1) "snack" else "snacks"} · ${money(total)}",
+                        fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 24.sp, color = Color.White,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                    Text(
+                        last.joinToString(", ") { (s, q) -> if (q > 1) "$q× ${s.name}" else s.name },
+                        fontFamily = Inter, fontSize = 15.sp, color = C.Slate300, maxLines = 2,
+                    )
+                }
+            }
+            val take: @Composable (Modifier) -> Unit = { m ->
+                Btn(
+                    vm::take, m, bg = C.Yellow, fg = C.Ink, border = null, radius = 18.dp, minHeight = 64.dp, padding = PaddingValues(horizontal = 24.dp),
+                ) { BtnText("Take ${if (count == 1) "it" else "all"} · ${money(total)}", size = 20.sp, weight = FontWeight.Bold) }
+            }
+            val clear: @Composable (Modifier) -> Unit = { m ->
+                Btn(
+                    vm::cancel, m, bg = Color.Transparent, fg = Color.White, border = BorderStroke(1.dp, Color.White.copy(alpha = .35f)),
+                    radius = 18.dp, minHeight = 64.dp, padding = PaddingValues(horizontal = 20.dp),
+                ) { BtnText("Clear", size = 18.sp) }
+            }
+            Box(
+                Modifier.widthIn(max = 1140.dp).fillMaxWidth()
+                    .shadow(30.dp, RoundedCornerShape(26.dp), spotColor = Color.Black.copy(alpha = .5f))
+                    .background(C.Ink, RoundedCornerShape(26.dp))
+                    .border(1.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(26.dp))
+                    .padding(16.dp),
+            ) {
+                if (stack) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        summary(Modifier.padding(horizontal = 4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { take(Modifier.weight(1f)); clear(Modifier) }
+                    }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        summary(Modifier.weight(1f).padding(start = 8.dp))
+                        clear(Modifier)
+                        take(Modifier)
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun PinPad(vm: ShelfViewModel) {

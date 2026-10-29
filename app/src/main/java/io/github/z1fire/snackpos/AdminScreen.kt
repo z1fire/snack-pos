@@ -119,7 +119,7 @@ private fun Split(minMain: Dp, minSide: Dp, sideGrows: Boolean, main: @Composabl
  * row's full width (CSS auto-fit / flex-wrap); without, short rows keep empty slots (auto-fill).
  */
 @Composable
-private fun <T> Grid(items: List<T>, min: Dp, gap: Dp, stretch: Boolean = false, extra: (@Composable (Modifier) -> Unit)? = null, cell: @Composable (T, Modifier) -> Unit) {
+internal fun <T> Grid(items: List<T>, min: Dp, gap: Dp, stretch: Boolean = false, extra: (@Composable (Modifier) -> Unit)? = null, cell: @Composable (T, Modifier) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val all: List<Any?> = items + if (extra != null) listOf(Unit) else emptyList()
         val fit = maxOf(1, ((maxWidth + gap) / (min + gap)).toInt())

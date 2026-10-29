@@ -23,7 +23,8 @@ enum class AdminTab(val label: String) {
     Stock("Stock"), Count("Stock count"), Snacks("Snacks & prices"), Insights("Insights"), Settings("Settings")
 }
 
-data class Toast(val id: Int, val text: String)
+/** What a take removed, so Undo can put it all back. */
+data class Toast(val taken: Map<Int, Int>, val at: Long, val text: String)
 
 data class AddForm(val name: String = "", val price: String = "", val stock: String = "", val par: String = "") {
     val invalid: Boolean get() = name.isBlank() || (price.toDoubleOrNull()?.let { it < 0 } ?: true)
@@ -39,7 +40,8 @@ class ShelfViewModel(app: Application) : AndroidViewModel(app) {
 
     var toast by mutableStateOf<Toast?>(null)
         private set
-    var selected by mutableStateOf<Int?>(null)
+    /** Snack id to how many are picked. */
+    val basket = mutableStateMapOf<Int, Int>()
     var admin by mutableStateOf(false)
         private set
     var tab by mutableStateOf(AdminTab.Stock)
@@ -99,37 +101,57 @@ class ShelfViewModel(app: Application) : AndroidViewModel(app) {
         x.copy(priceInput = v, price = if (p != null && p >= 0) p else x.price)
     }
 
+    /** Adds one to the basket, up to what is on the shelf. */
     fun pick(id: Int) {
         val it = data.items.firstOrNull { s -> s.id == id } ?: return
-        if (it.stock <= 0 || selected != null) return
-        selected = id
+        val have = basket[id] ?: 0
+        if (have < it.stock) basket[id] = have + 1
     }
 
-    fun cancel() { selected = null }
+    fun unpick(id: Int) {
+        val have = basket[id] ?: return
+        if (have <= 1) basket.remove(id) else basket[id] = have - 1
+    }
+
+    fun cancel() { basket.clear() }
+
+    /** Basket lines still in stock, in shelf order. */
+    val lines: List<Pair<Snack, Int>>
+        get() = data.items.mapNotNull { s -> basket[s.id]?.let { q -> s to minOf(q, s.stock) }?.takeIf { it.second > 0 } }
 
     fun take() {
-        val it = data.items.firstOrNull { s -> s.id == selected && s.stock > 0 } ?: return
-        val left = it.stock - 1
-        setStock(it.id, -1)
-        update { d -> d.copy(log = d.log + LogEntry(it.id, it.name, it.price, System.currentTimeMillis())) }
-        selected = null
-        toast = Toast(it.id, "Enjoy your ${it.name}! $left left")
+        val picked = lines
+        if (picked.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val qty = picked.associate { (s, q) -> s.id to q }
+        update { d ->
+            d.copy(
+                items = d.items.map { s -> qty[s.id]?.let { s.copy(stock = s.stock - it) } ?: s },
+                log = d.log + picked.flatMap { (s, q) -> List(q) { LogEntry(s.id, s.name, s.price, now) } },
+            )
+        }
+        basket.clear()
+        val count = picked.sumOf { it.second }
+        val total = picked.sumOf { (s, q) -> s.price * q }
+        val text = if (picked.size == 1 && count == 1) "Enjoy your ${picked[0].first.name}!" else "Enjoy! $count snacks · ${money(total)}"
+        toast = Toast(qty, now, text)
         toastJob?.cancel()
         toastJob = viewModelScope.launch { delay(5000); toast = null }
     }
 
     fun undo() {
         val t = toast ?: return
-        setStock(t.id, 1)
         update { d ->
-            val i = d.log.indexOfLast { it.id == t.id }
-            d.copy(log = if (i >= 0) d.log.toMutableList().also { l -> l.removeAt(i) } else d.log)
+            d.copy(
+                items = d.items.map { s -> t.taken[s.id]?.let { s.copy(stock = s.stock + it) } ?: s },
+                log = d.log.filterNot { it.t == t.at && it.id in t.taken },
+            )
         }
         toastJob?.cancel()
         toast = null
     }
 
-    fun openPin() { pinOpen = true; pinEntry = ""; pinError = false; selected = null }
+    fun openPin() { pinOpen = true; pinEntry = ""; pinError = false; basket.clear() }
     fun closePin() { pinOpen = false; pinEntry = ""; pinError = false }
     fun backspacePin() { pinEntry = pinEntry.dropLast(1); pinError = false }
 
@@ -138,7 +160,7 @@ class ShelfViewModel(app: Application) : AndroidViewModel(app) {
         if (entry.length >= data.pin.length) {
             if (entry == data.pin) {
                 pinOpen = false; pinEntry = ""; pinError = false
-                admin = true; selected = null; tab = AdminTab.Stock
+                admin = true; basket.clear(); tab = AdminTab.Stock
             } else {
                 pinEntry = ""; pinError = true; pinErrorTick++
             }
@@ -156,6 +178,7 @@ class ShelfViewModel(app: Application) : AndroidViewModel(app) {
         data.items.firstOrNull { it.id == id }?.photo?.let { File(it).delete() }
         update { d -> d.copy(items = d.items.filter { it.id != id }) }
         counts.remove(id)
+        basket.remove(id)
         confirmRemove = null
     }
 

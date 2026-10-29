@@ -2,7 +2,7 @@
 
 A native Android (Kotlin + Jetpack Compose) snack counter POS and inventory app, built for a tablet on the snack shelf.
 
-- **Shelf:** swipe through tilting snack cards, tap one, then "Take one". Undo is available for 5 seconds.
+- **Shelf:** every snack on one board. Tap snacks to add them (tap again for more, − to remove one), see the running total, then "Take all". Undo is available for 5 seconds.
 - **Admin** (PIN, default `1234`):
   - **Stock:** stock and par levels, plus a shopping list.
   - **Stock count:** count what's actually there and log what's missing.
